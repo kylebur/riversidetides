@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Damariscotta • Tides (36h)</title>
+  <style>
+    :root{
+      --bg:#081028; --ink:#eaf1ff; --muted:#9ab0d2; --card:rgba(255,255,255,.06);
+      --glass:rgba(255,255,255,.06); --green:#2dd4bf; --red:#fb7185; --accent:#8ab4ff;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0}
+    body{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial; color:var(--ink);
+      background:radial-gradient(1000px 600px at 90% -10%, #113a7a 0%, transparent 60%), radial-gradient(800px 500px at -10% 10%, #0b2a58 0%, transparent 60%), linear-gradient(180deg,#081428,var(--bg));
+      -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale; overflow:hidden}
+
+    .app{display:grid; grid-template-rows:auto auto 1fr auto; height:100%}
+    header{padding:14px 16px 8px; display:flex; gap:12px; align-items:center; flex-wrap:wrap}
+    .title{font-weight:800; font-size:clamp(18px,3.5vw,22px)}
+    .subtitle{font-size:12px;color:var(--muted)}
+    .pill{display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border-radius:999px;background:var(--glass);border:1px solid rgba(255,255,255,.06);color:var(--muted);font-size:12px}
+    .legend{display:flex;align-items:center;gap:10px}
+    .sw{width:12px;height:12px;border-radius:3px}
+    .sw.g{background:var(--green)} .sw.r{background:var(--red)}
+
+    .card{margin:8px 16px 0;padding:10px 12px;border-radius:14px;background:var(--card);border:1px solid rgba(255,255,255,.06);backdrop-filter:blur(8px)}
+
+    #wrap{position:relative;margin:10px 16px;border-radius:14px;overflow:hidden;border:1px solid rgba(255,255,255,.06)}
+    canvas{display:block;width:100%;height:58vh;background:linear-gradient(180deg, rgba(255,255,255,.03), transparent 30%), radial-gradient(800px 300px at 20% -10%, rgba(255,255,255,.03), transparent 60%)}
+    .overlay{position:absolute;inset:0;pointer-events:none}
+    .now{position:absolute;top:0;bottom:0;width:2px;background:rgba(255,255,255,.7)}
+    .ticks{position:absolute;inset:auto 0 0 0;height:36px;display:flex}
+    .tick{flex:1;font-size:11px;color:var(--muted);text-align:center;padding-top:18px}
+    .tip{position:absolute;padding:8px 10px;border-radius:10px;background:#071227;color:var(--ink);border:1px solid rgba(255,255,255,.08);font-size:12px;pointer-events:none;transform:translate(-50%,-110%);white-space:nowrap;box-shadow:0 10px 24px rgba(0,0,0,.35)}
+
+    .controls{display:flex;gap:8px;align-items:center;padding:10px 16px 16px;flex-wrap:wrap}
+    button{background:var(--glass);color:var(--ink);border:1px solid rgba(255,255,255,.08);padding:8px 12px;border-radius:10px;font-weight:700}
+    .note{color:var(--muted);font-size:12px;padding:0 16px 16px}
+
+    @media (max-width:420px){ .title{font-size:18px} }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div>
+        <div class="title">Damariscotta River Tides</div>
+        <div class="subtitle">Newcastle, ME — pan by dragging • datum: MLLW</div>
+      </div>
+      <div class="pill" id="station">Station 8415709</div>
+      <div class="pill" id="clock">—</div>
+      <div class="legend pill"><span class="sw g"></span>Flood <span style="width:8px"></span><span class="sw r"></span>Ebb</div>
+    </header>
+
+    <div class="card" id="hilo">Loading highs/lows…</div>
+
+    <div id="wrap">
+      <canvas id="chart"></canvas>
+      <div class="overlay">
+        <div class="now" id="now" style="left:-9999px"></div>
+        <div class="ticks" id="ticks"></div>
+        <div class="tip" id="tip" style="left:-9999px;display:none">—</div>
+      </div>
+    </div>
+
+    <div class="controls">
+      <button id="nowBtn">Now</button>
+      <button id="zoomIn">Zoom in</button>
+      <button id="zoomOut">Zoom out</button>
+      <span class="subtitle">Drag chart to scroll • tap for details</span>
+    </div>
+
+    <div class="note">Data: NOAA CO‑OPS predictions (6‑min). Current dir uses offsets: Flood starts 2.9h after Low; Ebb starts 1.75h after High. Station locked to 8415709.</div>
+  </div>
+
+<script>
+// ---- Config ----
+const STATION = '8415709';
+const FLOOD_DELAY_H = 2.9;   // hours after Low
+const EBB_DELAY_H   = 1.75;  // hours after High
+const PADDING = { l:56, r:14, t:18, b:36 };
+
+// ---- Elements ----
+const canvas = document.getElementById('chart');
+const ctx = canvas.getContext('2d');
+const ticksEl = document.getElementById('ticks');
+const tipEl = document.getElementById('tip');
+const nowEl = document.getElementById('now');
+const hiloEl = document.getElementById('hilo');
+const clockEl = document.getElementById('clock');
+
+// ---- State ----
+let view = { center: new Date(), spanHours: 36 };
+let cache = { start:null, end:null, pts:[], hilo:[], transitions:[] };
+
+// ---- Helpers ----
+const pad = n => String(n).padStart(2,'0');
+function formatNOAATime(d){ return `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`; }
+function fmtFull(d){ return d.toLocaleString([], {weekday:'short', month:'short', day:'numeric', hour:'numeric', minute:'2-digit'}) }
+function ms(t){ return t.getTime ? t.getTime() : new Date(t).getTime(); }
+
+function domain(){
+  const half = view.spanHours/2*3600e3;
+  return { t0: new Date(view.center.getTime() - half), t1: new Date(view.center.getTime() + half) };
+}
+
+function xScale(time){ const {t0,t1} = domain(); const W = canvas.clientWidth - PADDING.l - PADDING.r; return PADDING.l + ( (ms(time)-ms(t0)) / (ms(t1)-ms(t0)) ) * W }
+function yScale(v, min, max){ const H = canvas.clientHeight - PADDING.t - PADDING.b; return PADDING.t + (1 - (v-min)/(max-min||1)) * H }
+
+function nearestIndex(t){
+  if(!cache.pts.length) return -1;
+  let lo=0, hi=cache.pts.length-1;
+  while(hi-lo>1){ const mid=(lo+hi)>>1; (ms(cache.pts[mid].t) < ms(t)) ? lo=mid : hi=mid; }
+  return Math.abs(ms(cache.pts[lo].t)-ms(t)) < Math.abs(ms(cache.pts[hi].t)-ms(t)) ? lo : hi;
+}
+
+// ---- Data fetch / caching ----
+async function ensureDataAround(center, spanHours){
+  const buffer = Math.max(48, spanHours * 1.5);
+  const needStart = new Date(center.getTime() - (spanHours/2 + buffer) * 3600e3);
+  const needEnd   = new Date(center.getTime() + (spanHours/2 + buffer) * 3600e3);
+  if(cache.start && cache.end && needStart >= cache.start && needEnd <= cache.end) return;
+
+  // Add a small margin to NOAA request
+  const begin = formatNOAATime(new Date(needStart.getTime() - 6*3600e3));
+  const end   = formatNOAATime(new Date(needEnd.getTime() + 6*3600e3));
+
+  const base = 'https://api.tidesandcurrents.noaa.gov/api/prod/datagetter';
+  const predParams = new URLSearchParams({ product:'predictions', interval:'6', application:'damariscotta-mobile', begin_date:begin, end_date:end, datum:'MLLW', station:STATION, time_zone:'lst_ldt', units:'english', format:'json' });
+  const hiloParams = new URLSearchParams({ product:'predictions', interval:'hilo', application:'damariscotta-mobile', begin_date:begin, end_date:end, datum:'MLLW', station:STATION, time_zone:'lst_ldt', units:'english', format:'json' });
+
+  try{
+    const [rPred, rHilo] = await Promise.all([fetch(base+'?'+predParams.toString()), fetch(base+'?'+hiloParams.toString())]);
+    const jPred = await rPred.json();
+    const jHilo = await rHilo.json();
+
+    const pts = (jPred.predictions||[]).map(p=>({ t:new Date(p.t), v:parseFloat(p.v) })).filter(p=>isFinite(p.v)).sort((a,b)=>ms(a.t)-ms(b.t));
+    const hilo = (jHilo.predictions||[]).map(p=>({ t:new Date(p.t), v:parseFloat(p.v), type:(p.type||p.t?.type||'').toString() })).sort((a,b)=>ms(a.t)-ms(b.t));
+
+    cache = { start:needStart, end:needEnd, pts, hilo, transitions: buildTransitions(hilo) };
+    annotateHiLo();
+  }catch(err){
+    console.error('NOAA fetch failed, using fallback sample', err);
+    // fallback: synthetic semidiurnal curve
+    const pts = [];
+    const now = new Date();
+    const start = new Date(now.getTime() - 24*3600e3);
+    for(let i=0;i<= ( (view.spanHours+96) * 10 ); i++){ // dense sample
+      const t = new Date(start.getTime() + i*6*60*1000);
+      const x = i/((view.spanHours+96)*10) * Math.PI*2*2;
+      const v = 4 + 2.8*Math.sin(x) + 0.4*Math.sin(2*x);
+      pts.push({t,v});
+    }
+    cache = { start:new Date(start.getTime()), end:new Date(start.getTime()+pts.length*6*60*1000), pts, hilo:[], transitions:[] };
+    annotateHiLo();
+  }
+}
+
+// ---- Hi/Lo and transitions ----
+function buildTransitions(hiloEvents){
+  const trans = [];
+  (hiloEvents||[]).forEach(ev=>{
+    const type = (ev.type||'').toString().toUpperCase();
+    if(type === 'L') trans.push({ t: new Date(ms(ev.t) + FLOOD_DELAY_H*3600e3), dir:'flood' });
+    if(type === 'H') trans.push({ t: new Date(ms(ev.t) + EBB_DELAY_H*3600e3), dir:'ebb' });
+  });
+  trans.sort((a,b)=>ms(a.t)-ms(b.t));
+  return trans;
+}
+
+function annotateHiLo(){
+  const events = cache.hilo || [];
+  const hi = events.filter(e=> (e.type||'').toString().toUpperCase()==='H');
+  const lo = events.filter(e=> (e.type||'').toString().toUpperCase()==='L');
+  const fmt = e => `${fmtFull(e.t)} • ${e.v.toFixed(2)} ft`;
+  hiloEl.innerHTML = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px"><div>${hi.slice(0,3).map(x=>`⬆️ High: ${fmt(x)}`).join('<br>')||'—'}</div><div>${lo.slice(0,3).map(x=>`⬇️ Low: ${fmt(x)}`).join('<br>')||'—'}</div></div>`;
+}
+
+// find direction at a given time using transitions
+function directionAtTime(t){
+  const trans = cache.transitions || [];
+  if(!trans.length){
+    // fallback: use local slope
+    const idx = nearestIndex(t);
+    if(idx<0 || idx+1 >= cache.pts.length) return 'flood';
+    return (cache.pts[idx+1].v - cache.pts[idx].v) >= 0 ? 'flood' : 'ebb';
+  }
+  let last = null;
+  for(let i=0;i<trans.length;i++){
+    if(ms(trans[i].t) <= ms(t)) last = trans[i]; else break;
+  }
+  if(last) return last.dir;
+  // before the first transition, assume opposite
+  return trans[0].dir === 'flood' ? 'ebb' : 'flood';
+}
+
+// ---- Drawing ----
+function draw(){
+  if(!cache.pts.length) return;
+  const {t0,t1} = domain();
+  const visible = cache.pts.filter(p=> ms(p.t) >= ms(t0) && ms(p.t) <= ms(t1));
+  if(!visible.length) return;
+  const min = Math.min(...visible.map(p=>p.v));
+  const max = Math.max(...visible.map(p=>p.v));
+
+  // setup canvas size
+  const dpr = Math.max(1, window.devicePixelRatio || 1);
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,canvas.clientWidth,canvas.clientHeight);
+
+  // axes grid
+  ctx.strokeStyle = 'rgba(255,255,255,.08)'; ctx.lineWidth = 1;
+  const steps = 5;
+  ctx.font = '12px system-ui'; ctx.fillStyle = 'rgba(255,255,255,.75)'; ctx.textBaseline='middle';
+  for(let i=0;i<=steps;i++){
+    const v = min + (max-min) * i/steps;
+    const y = yScale(v, min, max);
+    ctx.beginPath(); ctx.moveTo(PADDING.l, y); ctx.lineTo(canvas.clientWidth - PADDING.r, y); ctx.stroke();
+    ctx.fillText(v.toFixed(1) + ' ft', 8, y);
+  }
+
+  // X ticks
+  ticksEl.innerHTML = '';
+  const totalHours = Math.round((ms(t1)-ms(t0))/3600e3);
+  for(let h=0; h<= totalHours; h++){
+    const t = new Date(ms(t0) + h*3600e3);
+    const el = document.createElement('div'); el.className='tick'; el.textContent = (h%3===0) ? t.toLocaleTimeString([], {hour:'numeric'}) : '';
+    ticksEl.appendChild(el);
+  }
+
+  // create segments by directionAtTime(midpoint) for each consecutive pair
+  const segments = [];
+  let segPts = [visible[0]];
+  let segMode = directionAtTime(new Date((ms(visible[0].t)+ms(visible[1]?.t||visible[0].t))/2));
+  for(let i=1;i<visible.length;i++){
+    const a = visible[i-1], b = visible[i];
+    const mid = new Date((ms(a.t)+ms(b.t))/2);
+    const mode = directionAtTime(mid);
+    if(mode !== segMode){ segments.push({mode:segMode, pts:segPts}); segPts = [a]; segMode = mode; }
+    segPts.push(b);
+  }
+  if(segPts.length) segments.push({mode:segMode, pts:segPts});
+
+  // draw each segment (filled area + stroked line)
+  segments.forEach(s => {
+    const col = s.mode === 'flood' ? getComputedStyle(document.documentElement).getPropertyValue('--green').trim() : getComputedStyle(document.documentElement).getPropertyValue('--red').trim();
+    // path
+    ctx.beginPath();
+    const firstX = xScale(s.pts[0].t), firstY = yScale(s.pts[0].v, min, max);
+    ctx.moveTo(firstX, firstY);
+    for(let i=1;i<s.pts.length;i++){ ctx.lineTo(xScale(s.pts[i].t), yScale(s.pts[i].v, min, max)); }
+    // fill down to baseline
+    const lastX = xScale(s.pts[s.pts.length-1].t);
+    const baseY = yScale(min, min, max);
+    ctx.lineTo(lastX, baseY); ctx.lineTo(firstX, baseY); ctx.closePath();
+    ctx.globalAlpha = 0.12; ctx.fillStyle = col; ctx.fill();
+    ctx.globalAlpha = 1; ctx.strokeStyle = col; ctx.lineWidth = 2.2; ctx.stroke();
+  });
+
+  // draw hi/lo markers
+  ctx.fillStyle = 'rgba(255,255,255,.95)';
+  (cache.hilo||[]).forEach(e=>{ if(ms(e.t)>=ms(t0) && ms(e.t)<=ms(t1)){ ctx.beginPath(); ctx.arc(xScale(e.t), yScale(e.v, min, max), 3.5, 0, Math.PI*2); ctx.fill(); } });
+
+  // now line
+  updateNowLine();
+}
+
+function getVisibleMinMax(){ const {t0,t1}=domain(); const vis = cache.pts.filter(p=> ms(p.t)>=ms(t0) && ms(p.t)<=ms(t1)); return vis.length ? [Math.min(...vis.map(p=>p.v)), Math.max(...vis.map(p=>p.v))] : [0,1]; }
+
+function updateNowLine(){ const {t0,t1} = domain(); const now = new Date(); clockEl.textContent = fmtFull(now); if(ms(now)>=ms(t0) && ms(now)<=ms(t1)){ nowEl.style.left = xScale(now) + 'px'; } else { nowEl.style.left = '-9999px'; } }
+
+// ---- Interaction: drag to pan, pointer hover for tooltip ----
+let dragging=false, lastX=0, lastCenter=null;
+function pxToMs(px){ const {t0,t1}=domain(); const W = canvas.clientWidth - PADDING.l - PADDING.r; return px * (ms(t1)-ms(t0))/W }
+
+canvas.addEventListener('pointerdown', e=>{ dragging=true; lastX=e.clientX; lastCenter = new Date(view.center); canvas.setPointerCapture(e.pointerId); });
+window.addEventListener('pointerup', e=>{ dragging=false; tipEl.style.display='none'; });
+window.addEventListener('pointermove', e=>{
+  const rect = canvas.getBoundingClientRect(); const x = e.clientX - rect.left;
+  if(ms(x) < 0) return;
+  showTipAtX(x);
+  if(!dragging) return;
+  const dx = e.clientX - lastX; const shift = -pxToMs(dx);
+  view.center = new Date(lastCenter.getTime() + shift);
+  ensureDataAround(view.center, view.spanHours).then(draw).catch(()=>draw());
+});
+
+function showTipAtX(x){ const {t0,t1}=domain(); const t = new Date(ms(t0) + ( (x - PADDING.l) / (canvas.clientWidth - PADDING.l - PADDING.r) ) * (ms(t1)-ms(t0)) ); const idx = nearestIndex(t); if(idx<0) { tipEl.style.display='none'; return; } const p = cache.pts[idx]; const dir = directionAtTime(p.t) === 'flood' ? '🌊 Flood (up‑river)' : '🌊 Ebb (down‑river)'; tipEl.style.display='block'; tipEl.style.left = Math.min(Math.max(x, 40), canvas.clientWidth-40) + 'px'; tipEl.style.top = (yScale(p.v, ...getVisibleMinMax()) - 8) + 'px'; tipEl.innerHTML = `${fmtFull(p.t)}<br><b>${p.v.toFixed(2)} ft</b> • ${dir}`; }
+
+// ---- Controls ----
+document.getElementById('zoomIn').onclick = ()=>{ view.spanHours = Math.max(6, Math.round(view.spanHours*0.75)); ensureDataAround(view.center, view.spanHours).then(draw); };
+document.getElementById('zoomOut').onclick = ()=>{ view.spanHours = Math.min(168, Math.round(view.spanHours/0.75)); ensureDataAround(view.center, view.spanHours).then(draw); };
+document.getElementById('nowBtn').onclick = ()=>{ view.center = new Date(); ensureDataAround(view.center, view.spanHours).then(draw); };
+
+// ---- Resize handling ----
+function resize(){ const dpr = Math.max(1, window.devicePixelRatio||1); canvas.width = canvas.clientWidth * dpr; canvas.height = canvas.clientHeight * dpr; draw(); }
+new ResizeObserver(resize).observe(canvas);
+
+// ---- Boot ----
+(async function(){ try{ resize(); await ensureDataAround(view.center, view.spanHours); draw(); }catch(e){ console.error(e); } setInterval(()=>{ updateNowLine(); }, 30*1000); })();
+
+</script>
+</body>
+</html>
