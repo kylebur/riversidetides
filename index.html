@@ -48,8 +48,6 @@
         <div class="title">Damariscotta River Tides</div>
         <div class="subtitle">Newcastle, ME — pan by dragging • datum: MLLW</div>
       </div>
-      <div class="pill" id="station">Station 8415709</div>
-      <div class="pill" id="clock">—</div>
       <div class="legend pill"><span class="sw g"></span>Flood <span style="width:8px"></span><span class="sw r"></span>Ebb</div>
     </header>
 
@@ -173,7 +171,7 @@ function annotateHiLo(){
   const hi = events.filter(e=> (e.type||'').toString().toUpperCase()==='H');
   const lo = events.filter(e=> (e.type||'').toString().toUpperCase()==='L');
   const fmt = e => `${fmtFull(e.t)} • ${e.v.toFixed(2)} ft`;
-  hiloEl.innerHTML = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px"><div>${hi.slice(0,3).map(x=>`⬆️ High: ${fmt(x)}`).join('<br>')||'—'}</div><div>${lo.slice(0,3).map(x=>`⬇️ Low: ${fmt(x)}`).join('<br>')||'—'}</div></div>`;
+  //hiloEl.innerHTML = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px"><div>${hi.slice(0,3).map(x=>`⬆️ High: ${fmt(x)}`).join('<br>')||'—'}</div><div>${lo.slice(0,3).map(x=>`⬇️ Low: ${fmt(x)}`).join('<br>')||'—'}</div></div>`;
 }
 
 // find direction at a given time using transitions
